@@ -6,6 +6,14 @@
     <Nullable>enable</Nullable>
     <UseWindowsForms>true</UseWindowsForms>
     <ImplicitUsings>enable</ImplicitUsings>
+    <ApplicationIcon>assets\desk-paws.ico</ApplicationIcon>
+    <Version>1.1.0</Version>
+    <AssemblyTitle>Desk Paws</AssemblyTitle>
+    <Description>A private desktop cat companion</Description>
   </PropertyGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="assets\cat-*.png" />
+  </ItemGroup>
 
 </Project>

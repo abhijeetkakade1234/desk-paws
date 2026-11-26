@@ -14,8 +14,6 @@ static class Program
                 throw new Exception("Keyboard hand mapping failed.");
             return;
         }
-        // To customize application configuration such as set high DPI settings or default font,
-        // see https://aka.ms/applicationconfiguration.
         ApplicationConfiguration.Initialize();
         if (Environment.GetCommandLineArgs().Contains("--preview"))
         {
@@ -23,6 +21,12 @@ static class Program
             using var bitmap = new Bitmap(cat.Width, cat.Height);
             cat.DrawToBitmap(bitmap, new Rectangle(Point.Empty, cat.Size));
             bitmap.Save(Path.Combine(Environment.CurrentDirectory, "preview.png"));
+            return;
+        }
+        using var mutex = new Mutex(true, "Local\\DeskPaws.SingleInstance", out bool first);
+        if (!first)
+        {
+            MessageBox.Show("Desk Paws is already running. Look for its cat icon in the taskbar or system tray.", "Desk Paws");
             return;
         }
         Application.Run(new CatWindow());

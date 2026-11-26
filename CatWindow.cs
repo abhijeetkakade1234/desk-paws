@@ -1,127 +1,165 @@
 using System.Drawing.Drawing2D;
+using System.Reflection;
 using System.Runtime.InteropServices;
+using System.Text.Json;
 
 namespace DeskPaws;
 
 public sealed class CatWindow : Form
 {
-    private const int WmKeyDown = 0x100, WmKeyUp = 0x101, WmSysKeyDown = 0x104, WmSysKeyUp = 0x105;
     private const int WhKeyboardLl = 13;
-    private readonly System.Windows.Forms.Timer timer = new() { Interval = 50 };
+    private const int WmKeyDown = 0x100, WmKeyUp = 0x101, WmSysKeyDown = 0x104, WmSysKeyUp = 0x105;
+    private static readonly string SettingsPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "DeskPaws", "settings.json");
+    private static readonly string[] CoatNames = ["Orange", "Tuxedo", "Calico", "Blue-gray"];
+    private readonly Bitmap[] cats = [LoadArt("cat-orange.png"), LoadArt("cat-tuxedo.png"), LoadArt("cat-calico.png"), LoadArt("cat-bluegray.png")];
+    private readonly Bitmap orangeLeft = LoadArt("cat-orange-left.png");
+    private readonly Bitmap orangeRight = LoadArt("cat-orange-right.png");
+    private readonly System.Windows.Forms.Timer timer = new() { Interval = 80 };
     private readonly HookProc hookProc;
     private readonly HashSet<int> held = [];
+    private readonly NotifyIcon tray;
+    private readonly Settings settings;
     private IntPtr hook;
     private DateTime lastAction = DateTime.UtcNow;
     private Point lastMouse = Cursor.Position;
-    private bool mouseActive, petting, dragging, leftPaw, rightPaw;
     private Point dragOffset;
-    private int coat;
-    private int sleepSeconds = 30;
-    private bool leftHanded, chunky = true;
-
-    private static readonly (string Name, Color Fur, Color Patch, Color Ear)[] Coats =
-    [
-        ("Orange", Color.FromArgb(240, 153, 80), Color.FromArgb(255, 221, 175), Color.FromArgb(217, 112, 94)),
-        ("Tuxedo", Color.FromArgb(58, 62, 75), Color.WhiteSmoke, Color.FromArgb(211, 119, 138)),
-        ("Cream", Color.FromArgb(246, 224, 190), Color.FromArgb(255, 247, 229), Color.FromArgb(223, 154, 163)),
-        ("Gray", Color.FromArgb(132, 148, 164), Color.FromArgb(220, 230, 233), Color.FromArgb(207, 140, 158)),
-        ("Brown", Color.FromArgb(147, 105, 84), Color.FromArgb(232, 191, 156), Color.FromArgb(210, 126, 137)),
-        ("Calico", Color.FromArgb(247, 237, 220), Color.FromArgb(238, 153, 95), Color.FromArgb(216, 133, 148))
-    ];
+    private bool mouseActive, petting, dragging, leftPaw, rightPaw, wasAsleep;
 
     public CatWindow()
     {
+        settings = LoadSettings();
         Text = "Desk Paws";
         FormBorderStyle = FormBorderStyle.None;
-        ShowInTaskbar = true;
+        ShowInTaskbar = false;
         TopMost = true;
         DoubleBuffered = true;
         BackColor = Color.Magenta;
         TransparencyKey = Color.Magenta;
-        ClientSize = new Size(290, 270);
-        var screen = Screen.PrimaryScreen!.WorkingArea;
-        Location = new Point(screen.Right - Width - 24, screen.Bottom - Height - 10);
+        SetSize(settings.Size);
+        var defaultLocation = new Point(Screen.PrimaryScreen!.WorkingArea.Right - Width - 24, Screen.PrimaryScreen.WorkingArea.Bottom - Height - 10);
+        Location = settings.X >= 0 && settings.Y >= 0 && Screen.AllScreens.Any(s => s.WorkingArea.IntersectsWith(new Rectangle(settings.X, settings.Y, Width, Height)))
+            ? new Point(settings.X, settings.Y) : defaultLocation;
+        Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath) ?? SystemIcons.Application;
 
         var menu = new ContextMenuStrip();
         var coats = new ToolStripMenuItem("Cat color");
-        for (var i = 0; i < Coats.Length; i++)
+        for (var i = 0; i < CoatNames.Length; i++)
         {
-            var index = i;
-            coats.DropDownItems.Add(Coats[i].Name, null, (_, _) => { coat = index; Invalidate(); });
+            int index = i;
+            coats.DropDownItems.Add(CoatNames[i], null, (_, _) => { settings.Coat = index; SaveSettings(); Invalidate(); });
         }
         menu.Items.Add(coats);
-        var shapes = new ToolStripMenuItem("Body style");
-        shapes.DropDownItems.Add("Chunky", null, (_, _) => { chunky = true; Invalidate(); });
-        shapes.DropDownItems.Add("Classic", null, (_, _) => { chunky = false; Invalidate(); });
-        menu.Items.Add(shapes);
         var sizes = new ToolStripMenuItem("Size");
-        foreach (var (name, scale) in new[] { ("Small", .8f), ("Medium", 1f), ("Large", 1.25f) })
-            sizes.DropDownItems.Add(name, null, (_, _) => { ClientSize = new Size((int)(290 * scale), (int)(270 * scale)); Invalidate(); });
+        foreach (var (label, size) in new[] { ("Small", 0), ("Medium", 1), ("Large", 2) })
+            sizes.DropDownItems.Add(label, null, (_, _) => { settings.Size = size; SetSize(size); SaveSettings(); Invalidate(); });
         menu.Items.Add(sizes);
         var sleeps = new ToolStripMenuItem("Sleep after");
         foreach (var seconds in new[] { 15, 30, 60, 120 })
-            sleeps.DropDownItems.Add($"{seconds} seconds", null, (_, _) => sleepSeconds = seconds);
+            sleeps.DropDownItems.Add($"{seconds} seconds", null, (_, _) => { settings.SleepSeconds = seconds; SaveSettings(); });
         menu.Items.Add(sleeps);
-        menu.Items.Add("Left handed mouse", null, (_, _) => { leftHanded = !leftHanded; });
+        var leftHanded = new ToolStripMenuItem("Left handed mouse") { CheckOnClick = true, Checked = settings.LeftHanded };
+        leftHanded.CheckedChanged += (_, _) => { settings.LeftHanded = leftHanded.Checked; SaveSettings(); Invalidate(); };
+        menu.Items.Add(leftHanded);
         menu.Items.Add(new ToolStripSeparator());
+        var pause = new ToolStripMenuItem("Pause keyboard reactions") { CheckOnClick = true, Checked = settings.Paused };
+        pause.CheckedChanged += (_, _) => { settings.Paused = pause.Checked; SetMonitoring(!settings.Paused); SaveSettings(); Invalidate(); };
+        menu.Items.Add(pause);
+        menu.Items.Add("Bring cat to front", null, (_, _) => { Show(); Activate(); TopMost = true; });
+        menu.Items.Add("About and privacy", null, (_, _) => MessageBox.Show(
+            "Desk Paws v1.1.0\n\nKeyboard codes are used only while keys are held to choose a paw animation. They are never saved or sent. Pause keyboard reactions from this menu to remove the keyboard hook entirely.\n\nPreferences and window position are saved in AppData.",
+            "About Desk Paws", MessageBoxButtons.OK, MessageBoxIcon.Information));
         menu.Items.Add("Quit", null, (_, _) => Close());
         ContextMenuStrip = menu;
+        tray = new NotifyIcon { Icon = Icon, Text = "Desk Paws", Visible = true, ContextMenuStrip = menu };
+        tray.DoubleClick += (_, _) => { Show(); Activate(); };
 
         hookProc = KeyboardCallback;
-        Load += (_, _) =>
+        Load += (_, _) => { SetMonitoring(!settings.Paused); pause.Checked = settings.Paused; timer.Start(); };
+        FormClosed += (_, _) =>
         {
-            hook = SetWindowsHookEx(WhKeyboardLl, hookProc, GetModuleHandle(null), 0);
-            if (hook == IntPtr.Zero)
-            {
-                MessageBox.Show("Could not listen for keyboard activity. Try running the app normally again.", Text);
-                Close();
-                return;
-            }
-            timer.Start();
+            timer.Stop();
+            SetMonitoring(false);
+            tray.Visible = false;
+            tray.Dispose();
+            timer.Dispose();
+            foreach (var cat in cats) cat.Dispose();
+            orangeLeft.Dispose();
+            orangeRight.Dispose();
         };
-        FormClosed += (_, _) => { timer.Stop(); if (hook != IntPtr.Zero) UnhookWindowsHookEx(hook); };
         timer.Tick += (_, _) =>
         {
             var mouse = Cursor.Position;
-            mouseActive = mouse != lastMouse || (GetAsyncKeyState(1) & 0x8000) != 0 || (GetAsyncKeyState(2) & 0x8000) != 0;
+            bool active = mouse != lastMouse || (GetAsyncKeyState(1) & 0x8000) != 0 || (GetAsyncKeyState(2) & 0x8000) != 0;
             lastMouse = mouse;
-            if (mouseActive) lastAction = DateTime.UtcNow;
-            Invalidate();
+            if (active) lastAction = DateTime.UtcNow;
+            bool asleep = DateTime.UtcNow - lastAction > TimeSpan.FromSeconds(settings.SleepSeconds);
+            if (mouseActive != active || wasAsleep != asleep) Invalidate();
+            mouseActive = active;
+            wasAsleep = asleep;
         };
         MouseDown += (_, e) =>
         {
             if (e.Button != MouseButtons.Left) return;
-            petting = e.Y < Height * .64;
+            petting = e.Y < Height * .60;
             dragging = true;
             dragOffset = e.Location;
             if (petting) lastAction = DateTime.UtcNow;
             Invalidate();
         };
-        MouseMove += (_, e) =>
+        MouseMove += (_, _) =>
         {
             if (!dragging) return;
             var next = new Point(Cursor.Position.X - dragOffset.X, Cursor.Position.Y - dragOffset.Y);
-            if (Math.Abs(next.X - Left) + Math.Abs(next.Y - Top) > 3)
-            {
-                petting = false;
-                Location = next;
-            }
+            if (Math.Abs(next.X - Left) + Math.Abs(next.Y - Top) <= 3) return;
+            petting = false;
+            Location = next;
         };
-        MouseUp += (_, _) => { petting = dragging = false; Invalidate(); };
+        MouseUp += (_, _) =>
+        {
+            dragging = petting = false;
+            settings.X = Left; settings.Y = Top;
+            SaveSettings();
+            Invalidate();
+        };
+    }
+
+    private void SetSize(int size)
+    {
+        float scale = size switch { 0 => .8f, 2 => 1.25f, _ => 1f };
+        ClientSize = new Size((int)(300 * scale), (int)(270 * scale));
+    }
+
+    private void SetMonitoring(bool enabled)
+    {
+        if (!enabled)
+        {
+            if (hook != IntPtr.Zero) UnhookWindowsHookEx(hook);
+            hook = IntPtr.Zero;
+            held.Clear(); leftPaw = rightPaw = false;
+            tray.Text = "Desk Paws (keyboard paused)";
+            return;
+        }
+        if (hook != IntPtr.Zero) return;
+        hook = SetWindowsHookEx(WhKeyboardLl, hookProc, GetModuleHandle(null), 0);
+        if (hook == IntPtr.Zero)
+        {
+            MessageBox.Show("Keyboard reactions could not start. The cat will stay visible, but typing will not animate it.", Text);
+            settings.Paused = true;
+        }
+        tray.Text = hook == IntPtr.Zero ? "Desk Paws (keyboard unavailable)" : "Desk Paws";
     }
 
     private IntPtr KeyboardCallback(int code, IntPtr message, IntPtr data)
     {
-        if (code >= 0)
+        if (code >= 0 && message.ToInt32() is WmKeyDown or WmSysKeyDown or WmKeyUp or WmSysKeyUp)
         {
-            var msg = message.ToInt32();
-            var key = Marshal.ReadInt32(data);
-            if (msg is WmKeyDown or WmSysKeyDown) held.Add(key);
-            if (msg is WmKeyUp or WmSysKeyUp) held.Remove(key);
-            // ponytail: key codes live only in this set while physically held; no text, log, or network path exists.
+            int key = Marshal.ReadInt32(data);
+            if (message.ToInt32() is WmKeyDown or WmSysKeyDown) held.Add(key);
+            else held.Remove(key);
+            // ponytail: key codes exist only while held; the app never turns them into text or stores a history.
             leftPaw = held.Any(IsLeftKey);
             rightPaw = held.Any(k => !IsLeftKey(k));
-            if (held.Count > 0) lastAction = DateTime.UtcNow;
+            lastAction = DateTime.UtcNow;
             Invalidate();
         }
         return CallNextHookEx(hook, code, message, data);
@@ -140,95 +178,48 @@ public sealed class CatWindow : Form
         base.OnPaint(e);
         var g = e.Graphics;
         g.SmoothingMode = SmoothingMode.AntiAlias;
-        g.ScaleTransform(Width / 290f, Height / 270f);
-        var (name, fur, patch, ear) = Coats[coat];
-        bool asleep = DateTime.UtcNow - lastAction > TimeSpan.FromSeconds(sleepSeconds);
-        using var shadow = new SolidBrush(Color.FromArgb(55, 53, 39));
-        using var body = new SolidBrush(fur);
-        using var light = new SolidBrush(patch);
-        using var pink = new SolidBrush(ear);
-        using var ink = new Pen(Color.FromArgb(68, 54, 57), 4) { StartCap = LineCap.Round, EndCap = LineCap.Round };
-        using var thin = new Pen(Color.FromArgb(98, 75, 72), 2) { StartCap = LineCap.Round, EndCap = LineCap.Round };
-        g.FillEllipse(shadow, 44, 251, 210, 11);
-        // Tail and body sit behind the desk.
-        using var tail = new Pen(fur, chunky ? 23 : 17) { StartCap = LineCap.Round, EndCap = LineCap.Round };
-        g.DrawArc(tail, 195, 142, 65, 85, 245, 220);
-        g.FillEllipse(body, chunky ? 49 : 73, chunky ? 105 : 111, chunky ? 194 : 146, chunky ? 144 : 132);
-        g.FillEllipse(light, chunky ? 82 : 101, 150, chunky ? 127 : 91, chunky ? 90 : 78);
-        // Ears, head, and coat markings.
-        FillTriangle(g, body, [new(84, 87), new(85, 27), new(128, 59)]);
-        FillTriangle(g, body, [new(164, 57), new(209, 27), new(207, 91)]);
-        FillTriangle(g, pink, [new(93, 76), new(94, 44), new(118, 64)]);
-        FillTriangle(g, pink, [new(177, 64), new(199, 44), new(199, 78)]);
-        g.FillEllipse(body, chunky ? 63 : 74, chunky ? 43 : 52, chunky ? 166 : 143, chunky ? 144 : 128);
-        g.FillEllipse(light, chunky ? 91 : 111, 105, chunky ? 111 : 68, chunky ? 73 : 54);
-        if (chunky)
-        {
-            using var blush = new SolidBrush(Color.FromArgb(145, 245, 151, 156));
-            g.FillEllipse(blush, 82, 121, 28, 13);
-            g.FillEllipse(blush, 181, 121, 28, 13);
-            g.FillEllipse(light, 69, 110, 28, 35);
-            g.FillEllipse(light, 195, 110, 28, 35);
-        }
-        if (coat is 0 or 4) { g.DrawLine(thin, 141, 59, 138, 80); g.DrawLine(thin, 124, 65, 128, 79); g.DrawLine(thin, 159, 65, 154, 79); }
-        if (coat == 5) { g.FillEllipse(new SolidBrush(Color.FromArgb(85, 84, 72)), 80, 72, 39, 35); g.FillEllipse(new SolidBrush(Color.FromArgb(235, 151, 95)), 177, 69, 33, 38); }
-        if (asleep || petting)
-        {
-            g.DrawArc(ink, 103, 100, 26, 13, 10, 160);
-            g.DrawArc(ink, 164, 100, 26, 13, 10, 160);
-        }
-        else
-        {
-            using var iris = new SolidBrush(Color.FromArgb(100, 155, 91));
-            g.FillEllipse(iris, 98, 95, 29, 31);
-            g.FillEllipse(iris, 165, 95, 29, 31);
-            g.FillEllipse(Brushes.DarkSlateGray, 109, 104, 12, 21);
-            g.FillEllipse(Brushes.DarkSlateGray, 176, 104, 12, 21);
-            g.FillEllipse(Brushes.White, 108, 100, 6, 7);
-            g.FillEllipse(Brushes.White, 175, 100, 6, 7);
-        }
-        FillTriangle(g, pink, [new(139, 125), new(153, 125), new(146, 133)]);
-        g.DrawArc(thin, 133, 129, 13, 12, 0, 150);
-        g.DrawArc(thin, 146, 129, 13, 12, 30, 150);
-        g.DrawLine(thin, 108, 133, 81, 128); g.DrawLine(thin, 108, 140, 84, 145);
-        g.DrawLine(thin, 184, 133, 211, 128); g.DrawLine(thin, 184, 140, 208, 145);
-        // A little keyboard gives each paw somewhere to land.
-        using var desk = new SolidBrush(Color.FromArgb(52, 55, 57));
-        using var board = new SolidBrush(Color.FromArgb(244, 242, 232));
-        FillRound(g, desk, new Rectangle(43, 210, 204, 48), 12);
-        FillRound(g, board, new Rectangle(48, 211, 194, 40), 10);
-        for (int row = 0; row < 2; row++)
-            for (int col = 0; col < 9; col++)
-            {
-                var active = (col < 4 && leftPaw) || (col > 4 && rightPaw);
-                using var keyBrush = new SolidBrush(active ? Color.FromArgb(251, 172, 112) : Color.White);
-                FillRound(g, keyBrush, new Rectangle(58 + col * 20, 216 + row * 16, 15, 10), 3);
-            }
-        g.FillEllipse(body, chunky ? 64 : 72, leftPaw || (mouseActive && leftHanded) ? 205 : 193, chunky ? 61 : 49, chunky ? 43 : 35);
-        g.FillEllipse(body, chunky ? 167 : 171, rightPaw || (mouseActive && !leftHanded) ? 205 : 193, chunky ? 61 : 49, chunky ? 43 : 35);
-        g.FillEllipse(light, chunky ? 80 : 84, leftPaw || (mouseActive && leftHanded) ? 226 : 213, chunky ? 35 : 27, 19);
-        g.FillEllipse(light, chunky ? 182 : 183, rightPaw || (mouseActive && !leftHanded) ? 226 : 213, chunky ? 35 : 27, 19);
-        g.DrawArc(thin, 83, leftPaw ? 222 : 210, 25, 9, 185, 170);
-        g.DrawArc(thin, 182, rightPaw || mouseActive ? 222 : 210, 25, 9, 185, 170);
+        g.InterpolationMode = InterpolationMode.HighQualityBicubic;
+        g.ScaleTransform(Width / 300f, Height / 270f);
+        var image = settings.Coat == 0 && leftPaw && !rightPaw ? orangeLeft
+            : settings.Coat == 0 && rightPaw && !leftPaw ? orangeRight
+            : cats[settings.Coat];
+        var catY = leftPaw || rightPaw ? 2 : 0;
+        g.DrawImage(image, 10, catY, 280, 245);
+        using var board = new SolidBrush(Color.FromArgb(57, 59, 62));
+        using var key = new SolidBrush(Color.FromArgb(251, 249, 241));
+        using var keyCap = new SolidBrush(Color.FromArgb(222, 219, 211));
+        using var pressed = new SolidBrush(Color.FromArgb(255, 181, 119));
+        using var border = new Pen(Color.FromArgb(34, 35, 38), 2);
+        FillRound(g, board, new Rectangle(37, 171, 226, 73), 13);
+        FillRound(g, key, new Rectangle(43, 175, 214, 60), 8);
+        for (int row = 0; row < 3; row++)
+            for (int col = 0; col < 10; col++)
+                FillRound(g, (col < 5 && leftPaw) || (col >= 5 && rightPaw) ? pressed : keyCap,
+                    new Rectangle(48 + col * 20, 180 + row * 17, 17, 13), 3);
+        FillRound(g, keyCap, new Rectangle(88, 231, 124, 7), 3);
         if (mouseActive)
         {
-            using var mouseBrush = new SolidBrush(Color.FromArgb(251, 236, 218));
-            g.FillEllipse(mouseBrush, leftHanded ? 43 : 225, 196, 29, 39);
-            g.DrawArc(thin, leftHanded ? 43 : 225, 196, 29, 39, 0, 360);
+            using var mouse = new SolidBrush(Color.FromArgb(251, 238, 222));
+            var x = settings.LeftHanded ? 6 : 266;
+            g.FillEllipse(mouse, x, 185, 28, 39);
+            g.DrawEllipse(border, x, 185, 28, 39);
         }
-        if (asleep)
+        if (wasAsleep)
         {
-            using var font = new Font("Segoe UI", 17, FontStyle.Bold);
-            g.DrawString("z z Z", font, Brushes.SteelBlue, 204, 48);
+            using var font = new Font("Segoe UI", 18, FontStyle.Bold);
+            g.DrawString("Z z", font, Brushes.SteelBlue, 235, 19);
         }
         if (petting)
         {
-            using var font = new Font("Segoe UI Symbol", 18);
-            g.DrawString("♥", font, Brushes.IndianRed, 211, 53);
+            using var font = new Font("Segoe UI Symbol", 24);
+            g.DrawString("♥", font, Brushes.HotPink, 234, 35);
+        }
+        if (settings.Paused)
+        {
+            using var font = new Font("Segoe UI", 9, FontStyle.Bold);
+            g.DrawString("PAUSED", font, Brushes.DarkSlateGray, 112, 246);
         }
     }
-
-    private static void FillTriangle(Graphics g, Brush brush, Point[] points) => g.FillPolygon(brush, points);
 
     private static void FillRound(Graphics g, Brush brush, Rectangle r, int radius)
     {
@@ -242,6 +233,58 @@ public sealed class CatWindow : Form
         g.FillPath(brush, path);
     }
 
+    private static Bitmap LoadArt(string file)
+    {
+        using var stream = Assembly.GetExecutingAssembly().GetManifestResourceStream($"DeskPaws.assets.{file}")
+            ?? throw new InvalidOperationException($"Missing cat art: {file}");
+        using var image = Image.FromStream(stream);
+        return new Bitmap(image);
+    }
+
+    private static Settings LoadSettings()
+    {
+        try
+        {
+            if (!File.Exists(SettingsPath)) return new Settings();
+            var value = JsonSerializer.Deserialize<Settings>(File.ReadAllText(SettingsPath)) ?? new Settings();
+            value.Coat = Math.Clamp(value.Coat, 0, CoatNames.Length - 1);
+            value.Size = Math.Clamp(value.Size, 0, 2);
+            if (value.SleepSeconds is not (15 or 30 or 60 or 120)) value.SleepSeconds = 30;
+            return value;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException)
+        {
+            return new Settings();
+        }
+    }
+
+    private void SaveSettings()
+    {
+        try
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(SettingsPath)!);
+            var temp = SettingsPath + ".tmp";
+            File.WriteAllText(temp, JsonSerializer.Serialize(settings));
+            File.Move(temp, SettingsPath, true);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            tray.ShowBalloonTip(3000, "Desk Paws", "Settings could not be saved.", ToolTipIcon.Warning);
+        }
+    }
+
+    private sealed class Settings
+    {
+        public Settings() { }
+        public int Coat { get; set; }
+        public int Size { get; set; } = 1;
+        public int SleepSeconds { get; set; } = 30;
+        public bool LeftHanded { get; set; }
+        public bool Paused { get; set; }
+        public int X { get; set; } = -1;
+        public int Y { get; set; } = -1;
+    }
+
     private delegate IntPtr HookProc(int code, IntPtr message, IntPtr data);
     [DllImport("user32.dll", SetLastError = true)] private static extern IntPtr SetWindowsHookEx(int id, HookProc callback, IntPtr module, uint thread);
     [DllImport("user32.dll")] private static extern bool UnhookWindowsHookEx(IntPtr hook);
@@ -249,4 +292,3 @@ public sealed class CatWindow : Form
     [DllImport("kernel32.dll", CharSet = CharSet.Auto)] private static extern IntPtr GetModuleHandle(string? name);
     [DllImport("user32.dll")] private static extern short GetAsyncKeyState(int key);
 }
-
