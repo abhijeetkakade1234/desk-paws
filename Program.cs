@@ -17,6 +17,14 @@ static class Program
         // To customize application configuration such as set high DPI settings or default font,
         // see https://aka.ms/applicationconfiguration.
         ApplicationConfiguration.Initialize();
+        if (Environment.GetCommandLineArgs().Contains("--preview"))
+        {
+            using var cat = new CatWindow();
+            using var bitmap = new Bitmap(cat.Width, cat.Height);
+            cat.DrawToBitmap(bitmap, new Rectangle(Point.Empty, cat.Size));
+            bitmap.Save(Path.Combine(Environment.CurrentDirectory, "preview.png"));
+            return;
+        }
         Application.Run(new CatWindow());
     }    
 }
