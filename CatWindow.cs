@@ -17,7 +17,7 @@ public sealed class CatWindow : Form
     private Point dragOffset;
     private int coat;
     private int sleepSeconds = 30;
-    private bool leftHanded;
+    private bool leftHanded, chunky = true;
 
     private static readonly (string Name, Color Fur, Color Patch, Color Ear)[] Coats =
     [
@@ -33,7 +33,7 @@ public sealed class CatWindow : Form
     {
         Text = "Desk Paws";
         FormBorderStyle = FormBorderStyle.None;
-        ShowInTaskbar = false;
+        ShowInTaskbar = true;
         TopMost = true;
         DoubleBuffered = true;
         BackColor = Color.Magenta;
@@ -50,6 +50,10 @@ public sealed class CatWindow : Form
             coats.DropDownItems.Add(Coats[i].Name, null, (_, _) => { coat = index; Invalidate(); });
         }
         menu.Items.Add(coats);
+        var shapes = new ToolStripMenuItem("Body style");
+        shapes.DropDownItems.Add("Chunky", null, (_, _) => { chunky = true; Invalidate(); });
+        shapes.DropDownItems.Add("Classic", null, (_, _) => { chunky = false; Invalidate(); });
+        menu.Items.Add(shapes);
         var sizes = new ToolStripMenuItem("Size");
         foreach (var (name, scale) in new[] { ("Small", .8f), ("Medium", 1f), ("Large", 1.25f) })
             sizes.DropDownItems.Add(name, null, (_, _) => { ClientSize = new Size((int)(290 * scale), (int)(270 * scale)); Invalidate(); });
@@ -87,11 +91,22 @@ public sealed class CatWindow : Form
         MouseDown += (_, e) =>
         {
             if (e.Button != MouseButtons.Left) return;
-            if (e.Y < Height * .64) { petting = true; lastAction = DateTime.UtcNow; }
-            else { dragging = true; dragOffset = e.Location; }
+            petting = e.Y < Height * .64;
+            dragging = true;
+            dragOffset = e.Location;
+            if (petting) lastAction = DateTime.UtcNow;
             Invalidate();
         };
-        MouseMove += (_, e) => { if (dragging) Location = new Point(Cursor.Position.X - dragOffset.X, Cursor.Position.Y - dragOffset.Y); };
+        MouseMove += (_, e) =>
+        {
+            if (!dragging) return;
+            var next = new Point(Cursor.Position.X - dragOffset.X, Cursor.Position.Y - dragOffset.Y);
+            if (Math.Abs(next.X - Left) + Math.Abs(next.Y - Top) > 3)
+            {
+                petting = false;
+                Location = next;
+            }
+        };
         MouseUp += (_, _) => { petting = dragging = false; Invalidate(); };
     }
 
@@ -136,16 +151,25 @@ public sealed class CatWindow : Form
         using var thin = new Pen(Color.FromArgb(98, 75, 72), 2) { StartCap = LineCap.Round, EndCap = LineCap.Round };
         g.FillEllipse(shadow, 44, 251, 210, 11);
         // Tail and body sit behind the desk.
-        g.DrawArc(new Pen(fur, 17) { StartCap = LineCap.Round, EndCap = LineCap.Round }, 195, 146, 65, 80, 245, 220);
-        g.FillEllipse(body, 73, 111, 146, 132);
-        g.FillEllipse(light, 101, 153, 91, 78);
+        using var tail = new Pen(fur, chunky ? 23 : 17) { StartCap = LineCap.Round, EndCap = LineCap.Round };
+        g.DrawArc(tail, 195, 142, 65, 85, 245, 220);
+        g.FillEllipse(body, chunky ? 49 : 73, chunky ? 105 : 111, chunky ? 194 : 146, chunky ? 144 : 132);
+        g.FillEllipse(light, chunky ? 82 : 101, 150, chunky ? 127 : 91, chunky ? 90 : 78);
         // Ears, head, and coat markings.
         FillTriangle(g, body, [new(84, 87), new(85, 27), new(128, 59)]);
         FillTriangle(g, body, [new(164, 57), new(209, 27), new(207, 91)]);
         FillTriangle(g, pink, [new(93, 76), new(94, 44), new(118, 64)]);
         FillTriangle(g, pink, [new(177, 64), new(199, 44), new(199, 78)]);
-        g.FillEllipse(body, 74, 52, 143, 128);
-        g.FillEllipse(light, 111, 107, 68, 54);
+        g.FillEllipse(body, chunky ? 63 : 74, chunky ? 43 : 52, chunky ? 166 : 143, chunky ? 144 : 128);
+        g.FillEllipse(light, chunky ? 91 : 111, 105, chunky ? 111 : 68, chunky ? 73 : 54);
+        if (chunky)
+        {
+            using var blush = new SolidBrush(Color.FromArgb(145, 245, 151, 156));
+            g.FillEllipse(blush, 82, 121, 28, 13);
+            g.FillEllipse(blush, 181, 121, 28, 13);
+            g.FillEllipse(light, 69, 110, 28, 35);
+            g.FillEllipse(light, 195, 110, 28, 35);
+        }
         if (coat is 0 or 4) { g.DrawLine(thin, 141, 59, 138, 80); g.DrawLine(thin, 124, 65, 128, 79); g.DrawLine(thin, 159, 65, 154, 79); }
         if (coat == 5) { g.FillEllipse(new SolidBrush(Color.FromArgb(85, 84, 72)), 80, 72, 39, 35); g.FillEllipse(new SolidBrush(Color.FromArgb(235, 151, 95)), 177, 69, 33, 38); }
         if (asleep || petting)
@@ -155,10 +179,13 @@ public sealed class CatWindow : Form
         }
         else
         {
-            g.FillEllipse(Brushes.DarkSlateGray, 108, 101, 15, 19);
-            g.FillEllipse(Brushes.DarkSlateGray, 169, 101, 15, 19);
-            g.FillEllipse(Brushes.White, 111, 103, 5, 5);
-            g.FillEllipse(Brushes.White, 172, 103, 5, 5);
+            using var iris = new SolidBrush(Color.FromArgb(100, 155, 91));
+            g.FillEllipse(iris, 98, 95, 29, 31);
+            g.FillEllipse(iris, 165, 95, 29, 31);
+            g.FillEllipse(Brushes.DarkSlateGray, 109, 104, 12, 21);
+            g.FillEllipse(Brushes.DarkSlateGray, 176, 104, 12, 21);
+            g.FillEllipse(Brushes.White, 108, 100, 6, 7);
+            g.FillEllipse(Brushes.White, 175, 100, 6, 7);
         }
         FillTriangle(g, pink, [new(139, 125), new(153, 125), new(146, 133)]);
         g.DrawArc(thin, 133, 129, 13, 12, 0, 150);
@@ -166,19 +193,21 @@ public sealed class CatWindow : Form
         g.DrawLine(thin, 108, 133, 81, 128); g.DrawLine(thin, 108, 140, 84, 145);
         g.DrawLine(thin, 184, 133, 211, 128); g.DrawLine(thin, 184, 140, 208, 145);
         // A little keyboard gives each paw somewhere to land.
-        using var desk = new SolidBrush(Color.FromArgb(231, 213, 190));
-        using var board = new SolidBrush(Color.FromArgb(250, 244, 230));
+        using var desk = new SolidBrush(Color.FromArgb(52, 55, 57));
+        using var board = new SolidBrush(Color.FromArgb(244, 242, 232));
         FillRound(g, desk, new Rectangle(43, 210, 204, 48), 12);
         FillRound(g, board, new Rectangle(48, 211, 194, 40), 10);
         for (int row = 0; row < 2; row++)
             for (int col = 0; col < 9; col++)
             {
                 var active = (col < 4 && leftPaw) || (col > 4 && rightPaw);
-                using var keyBrush = new SolidBrush(active ? Color.FromArgb(250, 174, 139) : Color.FromArgb(224, 217, 207));
+                using var keyBrush = new SolidBrush(active ? Color.FromArgb(251, 172, 112) : Color.White);
                 FillRound(g, keyBrush, new Rectangle(58 + col * 20, 216 + row * 16, 15, 10), 3);
             }
-        g.FillEllipse(body, 72, leftPaw ? 205 : 193, 49, 35);
-        g.FillEllipse(body, 171, rightPaw || (mouseActive && !leftHanded) ? 205 : 193, 49, 35);
+        g.FillEllipse(body, chunky ? 64 : 72, leftPaw || (mouseActive && leftHanded) ? 205 : 193, chunky ? 61 : 49, chunky ? 43 : 35);
+        g.FillEllipse(body, chunky ? 167 : 171, rightPaw || (mouseActive && !leftHanded) ? 205 : 193, chunky ? 61 : 49, chunky ? 43 : 35);
+        g.FillEllipse(light, chunky ? 80 : 84, leftPaw || (mouseActive && leftHanded) ? 226 : 213, chunky ? 35 : 27, 19);
+        g.FillEllipse(light, chunky ? 182 : 183, rightPaw || (mouseActive && !leftHanded) ? 226 : 213, chunky ? 35 : 27, 19);
         g.DrawArc(thin, 83, leftPaw ? 222 : 210, 25, 9, 185, 170);
         g.DrawArc(thin, 182, rightPaw || mouseActive ? 222 : 210, 25, 9, 185, 170);
         if (mouseActive)
