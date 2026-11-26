@@ -1,0 +1,35 @@
+name: Windows build
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - name: Build standalone EXE
+        run: dotnet publish -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true
+      - name: Check keyboard mapping
+        shell: pwsh
+        run: |
+          $app = Start-Process -FilePath '.\bin\Release\net8.0-windows\win-x64\publish\DeskPaws.exe' -ArgumentList '--self-test' -PassThru -Wait -WindowStyle Hidden
+          if ($app.ExitCode -ne 0) { throw 'Self-test failed' }
+      - name: Publish download
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $exe = '.\bin\Release\net8.0-windows\win-x64\publish\DeskPaws.exe'
+          gh release view v1.0.0 *> $null
+          if ($LASTEXITCODE -eq 0) { gh release upload v1.0.0 $exe --clobber }
+          else { gh release create v1.0.0 $exe --target $env:GITHUB_SHA --title 'Desk Paws v1.0.0' --notes 'Standalone Windows 10/11 app. No account or network access.' }
+
