@@ -10,7 +10,9 @@ The source is short enough to audit: see `KeyboardCallback` in `CatWindow.cs`. T
 
 ## Use
 
-Run it on Windows 10/11. Right click the cat for color, size, sleep timing, left handed mouse mode, and Quit. Drag its lower half to move it. Press and hold its head to pet it.
+Download `DeskPaws.exe` from [Releases](../../releases), then run it on Windows 10/11. Right click the cat for six colors, chunky or classic body, size, sleep timing, left handed mouse mode, and Quit. Drag anywhere to move it. Press and hold its head to pet it.
+
+Windows may show a SmartScreen warning because the app is unsigned. The source and build workflow are public so you can inspect or build it yourself.
 
 ## Build
 
